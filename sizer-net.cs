@@ -331,7 +331,7 @@ static class SizerNet
         foreach (string dir in DependencyDirs)
         {
             string TestAssemblyPath = Path.Combine(dir, DllFileName);
-            if (File.Exists(TestAssemblyPath)) return Assembly.LoadFile(TestAssemblyPath);
+            if (File.Exists(TestAssemblyPath) && !IsCoreRuntimeAssembly(TestAssemblyPath)) return Assembly.LoadFile(TestAssemblyPath);
         }
 
         foreach (string GuessedPath in GuessDependencyPaths(WantedName))
@@ -390,12 +390,11 @@ static class SizerNet
                 AddCandidate(Candidates, Path.Combine(VersionDir, DllFileName));
                 AddCandidate(Candidates, Path.Combine(Path.Combine(VersionDir, "Facades"), DllFileName));
             }
-
-            //.NET Core / .NET 5+ shared frameworks
-            foreach (string SharedFramework in new[] { "Microsoft.NETCore.App", "Microsoft.WindowsDesktop.App", "Microsoft.AspNetCore.App" })
-                foreach (string VersionDir in SortByVersionDesc(SafeGetDirectories(Path.Combine(Path.Combine(ProgramFilesDir, "dotnet\\shared"), SharedFramework)), Wanted.Version))
-                    AddCandidate(Candidates, Path.Combine(VersionDir, DllFileName));
         }
+
+        //note: the .NET Core/5+ shared framework dirs under dotnet\shared are deliberately NOT probed - their
+        //assemblies reference System.Private.CoreLib and can never resolve types on the .NET Framework runtime
+        //hosting this tool (System.Object would come from the wrong core library, failing every type load)
 
         //NuGet package cache
         string PackageDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget\\packages\\" + Wanted.Name.ToLowerInvariant());
@@ -413,6 +412,7 @@ static class SizerNet
             {
                 AssemblyName Found = AssemblyName.GetAssemblyName(Candidate);
                 if (!string.Equals(Found.Name, Wanted.Name, StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsCoreRuntimeAssembly(Candidate)) continue;
                 int Score = 0;
                 if (Wanted.Version != null && Wanted.Version.Equals(Found.Version)) Score += 2;
                 if (WantedToken != null && WantedToken.Length != 0 && TokensEqual(WantedToken, Found.GetPublicKeyToken())) Score += 1;
@@ -425,6 +425,21 @@ static class SizerNet
             foreach (KeyValuePair<int, string> kv in Scored)
                 if (kv.Key == Score) Result.Add(kv.Value);
         return Result;
+    }
+
+    //assemblies built for the .NET Core runtime (System.Private.CoreLib and anything referencing it) cannot be
+    //loaded for execution on the .NET Framework runtime hosting this tool - returning one from AssemblyResolve
+    //poisons the whole load, making every type fail with "the parent does not exist" instead of asking the user
+    static bool IsCoreRuntimeAssembly(string CandidatePath)
+    {
+        if (string.Equals(Path.GetFileNameWithoutExtension(CandidatePath), "System.Private.CoreLib", StringComparison.OrdinalIgnoreCase)) return true;
+        try
+        {
+            foreach (AssemblyName Reference in Assembly.ReflectionOnlyLoadFrom(CandidatePath).GetReferencedAssemblies())
+                if (Reference.Name == "System.Private.CoreLib") return true;
+            return false;
+        }
+        catch { return true; } //if it cannot even be inspected, do not risk loading it
     }
 
     static void AddCandidate(List<string> Candidates, string CandidatePath)
