@@ -44,11 +44,15 @@ using System.Windows.Forms;
 
 static class SizerNet
 {
-    //size of a tree node, split into metadata (names, tables, attributes, ...) and everything else (CIL code, resources, data)
+    //size of a tree node, categorized so bars and tooltips can show metadata vs MSIL code vs resources/data
     class NodeSize
     {
-        public long Metadata, Code;
-        public long Total { get { return Metadata + Code; } }
+        public const int ILCode = 0, Data = 1, MetaTypes = 2, MetaMethods = 3, MetaFields = 4, MetaProperties = 5, MetaEvents = 6, MetaAttributes = 7, MetaOther = 8, NumKinds = 9;
+        public static readonly string[] KindNames = { null, null, "types", "methods", "fields", "properties", "events", "custom attributes", "other" };
+        public long[] Sizes = new long[NumKinds];
+        public long Code { get { return Sizes[ILCode] + Sizes[Data]; } }
+        public long Metadata { get { long m = 0; for (int i = MetaTypes; i != NumKinds; i++) m += Sizes[i]; return m; } }
+        public long Total { get { long t = 0; foreach (long s in Sizes) t += s; return t; } }
     }
 
     static Form f;
@@ -195,7 +199,7 @@ static class SizerNet
 
                         string name = System.Runtime.InteropServices.Marshal.PtrToStringUni(lpzName);
                         TreeNode nResource = nResources.Nodes.Add("Resource: " + rt.ToString() + " " + (name == null ? "#" + lpzName.ToInt64() : name));
-                        SetNodeTag(nResource, 0, Size);
+                        SetNodeTag(nResource, NodeSize.Data, Size);
 
                         return true;
                     }), IntPtr.Zero);
@@ -212,7 +216,7 @@ static class SizerNet
                 if ((rl & ResourceLocation.Embedded) == 0 || (rl & ResourceLocation.ContainedInAnotherAssembly) != 0) continue;
                 TreeNode nResource = nResources.Nodes.Add("Manifest Resource: " + mr);
                 Stream mrs = assembly.GetManifestResourceStream(mr);
-                SetNodeTag(nResource, 0, mrs.Length);
+                SetNodeTag(nResource, NodeSize.Data, mrs.Length);
                 mrs.Dispose();
             }
 
@@ -222,7 +226,7 @@ static class SizerNet
 
                 int lenModuleFields = 0;
                 foreach (FieldInfo fi in module.GetFields(all)) lenModuleFields += Overhead_Field + fi.Name.Length;
-                if (lenModuleFields != 0) { TreeNode nModuleInfo = nAssembly.Nodes.Add(module.GetFields(all).Length.ToString() + " Fields in " + module.Name + " (Overhead)"); SetNodeTag(nModuleInfo, lenModuleFields, 0);     }
+                if (lenModuleFields != 0) { TreeNode nModuleInfo = nAssembly.Nodes.Add(module.GetFields(all).Length.ToString() + " Fields in " + module.Name + " (Overhead)"); SetNodeTag(nModuleInfo, NodeSize.MetaFields, lenModuleFields);     }
             }
 
             Type[] AssemblyTypes;
@@ -241,14 +245,15 @@ static class SizerNet
                     else (nType = nType.Nodes.Add(NSPart, NSPart)).Tag = new NodeSize();
                 }
 
-                int lenType = Overhead_Type + type.FullName.Length;
+                int lenType = Overhead_Type + type.FullName.Length, lenTypeAttrs = 0;
                 try { foreach (Type it in type.GetInterfaces()) lenType += Overhead_InterfaceImpl; } catch { }
                 #if DOTNET35
-                try { foreach (object ca in type.GetCustomAttributes(false)) lenType += Overhead_CustomAttribute; } catch { }
+                try { foreach (object ca in type.GetCustomAttributes(false)) lenTypeAttrs += Overhead_CustomAttribute; } catch { }
                 #else
-                try { foreach (CustomAttributeData ad in type.GetCustomAttributesData()) lenType += Overhead_CustomAttribute; } catch { }
+                try { foreach (CustomAttributeData ad in type.GetCustomAttributesData()) lenTypeAttrs += Overhead_CustomAttribute; } catch { }
                 #endif
-                SetNodeTag(nType, lenType, 0);
+                SetNodeTag(nType, NodeSize.MetaTypes, lenType);
+                if (lenTypeAttrs != 0) SetNodeTag(nType, NodeSize.MetaAttributes, lenTypeAttrs);
 
                 foreach (FieldInfo fi in type.GetFields(statics))
                 {
@@ -256,7 +261,7 @@ static class SizerNet
                     {
                         if (fi.FieldType.ContainsGenericParameters || fi.FieldType.IsGenericType) continue;
                         long fiSize = CalculateSize(IsReflectionOnly, fi.FieldType, fi);
-                        if (fiSize > 0) SetNodeTag(nType.Nodes.Add("Static Field: " + fi.Name), 0, fiSize);
+                        if (fiSize > 0) SetNodeTag(nType.Nodes.Add("Static Field: " + fi.Name), NodeSize.Data, fiSize);
                     }
                     catch (Exception) { }
                 }
@@ -265,15 +270,15 @@ static class SizerNet
                 foreach (FieldInfo    fi in type.GetFields(all))     { numTypeFields++;     lenTypeFields     += Overhead_Field    + fi.Name.Length;                         }
                 foreach (PropertyInfo pi in type.GetProperties(all)) { numTypeProperties++; lenTypeProperties += Overhead_Property + (pi.Name == null ? 0 : pi.Name.Length); }
                 foreach (EventInfo    ei in type.GetEvents(all))     { numTypeEvents++;     lenTypeEvents     += Overhead_Event    + ei.Name.Length;                         }
-                if (lenTypeFields     != 0) SetNodeTag(nType.Nodes.Add(numTypeFields.ToString()     + " Fields (Overhead)"),     lenTypeFields, 0);
-                if (lenTypeProperties != 0) SetNodeTag(nType.Nodes.Add(numTypeProperties.ToString() + " Properties (Overhead)"), lenTypeProperties, 0);
-                if (lenTypeEvents     != 0) SetNodeTag(nType.Nodes.Add(numTypeEvents.ToString()     + " Events (Overhead)"),     lenTypeEvents, 0);
+                if (lenTypeFields     != 0) SetNodeTag(nType.Nodes.Add(numTypeFields.ToString()     + " Fields (Overhead)"),     NodeSize.MetaFields,     lenTypeFields);
+                if (lenTypeProperties != 0) SetNodeTag(nType.Nodes.Add(numTypeProperties.ToString() + " Properties (Overhead)"), NodeSize.MetaProperties, lenTypeProperties);
+                if (lenTypeEvents     != 0) SetNodeTag(nType.Nodes.Add(numTypeEvents.ToString()     + " Events (Overhead)"),     NodeSize.MetaEvents,     lenTypeEvents);
 
                 foreach (ConstructorInfo ci in type.GetConstructors(all)) AddMethodNode(nType, ci);
                 foreach (MethodInfo      mi in type.GetMethods(all))      AddMethodNode(nType, mi);
             }
 
-            SetNodeTag(nAssembly.Nodes.Add("Other Overhead"), AssemblySize - ((NodeSize)nAssembly.Tag).Total, 0);
+            SetNodeTag(nAssembly.Nodes.Add("Other Overhead"), NodeSize.MetaOther, AssemblySize - ((NodeSize)nAssembly.Tag).Total);
             SortNodesByTag(nAssembly.Nodes);
             //FilterNodeByTag(nAssembly.Nodes, AssemblySize/100);
             nAssembly.Expand();
@@ -295,16 +300,18 @@ static class SizerNet
     static void AddMethodNode(TreeNode ParentNode, MethodBase mi)
     {
         TreeNode nMethod = ParentNode.Nodes.Add(mi.Name);
-        int lenMeta = Overhead_Method + mi.Name.Length;
+        int lenMeta = Overhead_Method + mi.Name.Length, lenAttrs = 0;
         long lenCode = 0;
         try { var mb = mi.GetMethodBody(); lenCode += mb.GetILAsByteArray().Length; foreach (LocalVariableInfo lvi in mb.LocalVariables) lenMeta += Overhead_LocalVariable; } catch { }
         try { foreach (ParameterInfo pi in mi.GetParameters()) lenMeta += 16 + (pi.Name == null ? 0 : pi.Name.Length); } catch { }
         #if DOTNET35
-        try { foreach (object ca in mi.GetCustomAttributes(false)) lenMeta += Overhead_CustomAttribute; } catch { }
+        try { foreach (object ca in mi.GetCustomAttributes(false)) lenAttrs += Overhead_CustomAttribute; } catch { }
         #else
-        try { foreach (CustomAttributeData ad in mi.GetCustomAttributesData()) lenMeta += Overhead_CustomAttribute; } catch { }
+        try { foreach (CustomAttributeData ad in mi.GetCustomAttributesData()) lenAttrs += Overhead_CustomAttribute; } catch { }
         #endif
-        SetNodeTag(nMethod, lenMeta, lenCode);
+        SetNodeTag(nMethod, NodeSize.MetaMethods, lenMeta);
+        if (lenAttrs != 0) SetNodeTag(nMethod, NodeSize.MetaAttributes, lenAttrs);
+        if (lenCode != 0) SetNodeTag(nMethod, NodeSize.ILCode, lenCode);
     }
 
     static Assembly ResolveExternalAssembly(object sender, ResolveEventArgs args)
@@ -334,15 +341,19 @@ static class SizerNet
         }
     }
 
-    static void SetNodeTag(TreeNode n, long MetadataSize, long CodeSize)
+    static void SetNodeTag(TreeNode n, int SizeKind, long Amount)
     {
         for (; n != null; n = n.Parent)
         {
             NodeSize ns = n.Tag as NodeSize;
             if (ns == null) n.Tag = ns = new NodeSize();
-            ns.Metadata += MetadataSize;
-            ns.Code += CodeSize;
+            ns.Sizes[SizeKind] += Amount;
         }
+    }
+
+    static string Percent(long Part, long Total)
+    {
+        return (100f * Part / Total).ToString("0") + "%";
     }
 
     static void SetNodeTooltips(TreeNodeCollection nc)
@@ -350,7 +361,17 @@ static class SizerNet
         foreach (TreeNode n in nc)
         {
             NodeSize ns = (NodeSize)n.Tag;
-            if (ns.Total != 0) n.ToolTipText = "Metadata: " + FormatKb(ns.Metadata) + " (" + (100f * ns.Metadata / ns.Total).ToString("0") + "% of " + FormatKb(ns.Total) + ")";
+            long total = ns.Total;
+            if (total != 0)
+            {
+                string tip = Percent(ns.Metadata, total) + " metadata, " + Percent(ns.Sizes[NodeSize.ILCode], total) + " MSIL code";
+                if (ns.Sizes[NodeSize.Data] != 0) tip += ", " + Percent(ns.Sizes[NodeSize.Data], total) + " resources/data";
+                string meta = "";
+                for (int i = NodeSize.MetaTypes; i != NodeSize.NumKinds; i++)
+                    if (ns.Sizes[i] != 0) meta += (meta.Length == 0 ? "" : ", ") + NodeSize.KindNames[i] + " " + FormatKb(ns.Sizes[i]);
+                if (meta.Length != 0) tip += "\r\nMetadata: " + meta;
+                n.ToolTipText = tip;
+            }
             SetNodeTooltips(n.Nodes);
         }
     }
@@ -376,7 +397,7 @@ static class SizerNet
         for (int i = 0; i != nc.Count; i++)
         {
             NodeSize ns = (NodeSize)nc[i].Tag;
-            if (ns.Total < Threshold) { Removed.Metadata += ns.Metadata; Removed.Code += ns.Code; nc[i].Remove(); i--; continue; }
+            if (ns.Total < Threshold) { for (int k = 0; k != NodeSize.NumKinds; k++) Removed.Sizes[k] += ns.Sizes[k]; nc[i].Remove(); i--; continue; }
             FilterNodeByTag(nc[i].Nodes, Threshold);
         }
         if (Removed.Total != 0) { nc.Add("... <Filtered> ...").Tag = Removed; }
