@@ -82,6 +82,14 @@ static class SizerNet
         tv.Anchor = (AnchorStyles)(AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right);
         tv.Resize += (object sender, EventArgs e) => { tv.Invalidate(); };
         tv.DrawNode += OnTreeDrawNode;
+        var cms = new ContextMenuStrip();
+        cms.Items.Add("Copy to clipboard", null, (object sender, EventArgs e) => { if (tv.SelectedNode != null) Clipboard.SetText(GetSubtreeText(tv.SelectedNode)); });
+        cms.Opening += (object sender, System.ComponentModel.CancelEventArgs e) =>
+        {
+            TreeNode n = tv.GetNodeAt(tv.PointToClient(Cursor.Position));
+            if (n == null) e.Cancel = true; else tv.SelectedNode = n;
+        };
+        tv.ContextMenuStrip = cms;
         f.Controls.Add(tv);
 
         Button btnLoad = new Button();
@@ -504,6 +512,26 @@ static class SizerNet
     static string FormatKb(long bytes)
     {
         return (bytes / 1024f).ToString("0.##") + " kb";
+    }
+
+    //renders a subtree as indented text, e.g.:
+    //SelectedItem: 2.88 kb (30% metadata)
+    //	SubItem1: 1.4 kb
+    //	SubItem2: 1.1 kb
+    static string GetSubtreeText(TreeNode n)
+    {
+        var sb = new System.Text.StringBuilder();
+        AppendSubtreeText(sb, n, 0);
+        return sb.ToString();
+    }
+
+    static void AppendSubtreeText(System.Text.StringBuilder sb, TreeNode n, int Depth)
+    {
+        NodeSize ns = (NodeSize)n.Tag;
+        sb.Append('\t', Depth).Append(n.Text).Append(": ").Append(FormatKb(ns.Total));
+        if (n.Nodes.Count != 0 && ns.Total != 0) sb.Append(" (").Append(Percent(ns.Metadata, ns.Total)).Append(" metadata)");
+        sb.AppendLine();
+        foreach (TreeNode c in n.Nodes) AppendSubtreeText(sb, c, Depth + 1);
     }
 
     static void FilterNodeByTag(TreeNodeCollection nc, long Threshold)
