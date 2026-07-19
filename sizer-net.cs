@@ -30,6 +30,7 @@
 */
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Drawing;
 using System.Reflection;
@@ -48,7 +49,7 @@ static class SizerNet
     static int TreeViewScrollX = 0;
     static string AssemblyPath;
     static long AssemblySize;
-    static string[] DependencyDirs, IgnoredDependencies;
+    static List<string> DependencyDirs = new List<string>(), IgnoredDependencies = new List<string>();
 
     [STAThread] static void Main(string[] args)
     {
@@ -103,12 +104,13 @@ static class SizerNet
 
     static void BrowseAssembly(bool InitialLoad = false)
     {
-        var ofd = new OpenFileDialog();
-        ofd.ValidateNames = ofd.CheckFileExists = ofd.CheckPathExists = true;
-        ofd.Filter = ".Net Assemblies (*.exe, *.dll)|*.exe;*.dll";
-        if (ofd.ShowDialog() != DialogResult.OK) { if (InitialLoad) f.Close(); return; }
-        ofd.Dispose();
-        LoadAssembly(ofd.FileName, InitialLoad);
+        using (var ofd = new OpenFileDialog())
+        {
+            ofd.ValidateNames = ofd.CheckFileExists = ofd.CheckPathExists = true;
+            ofd.Filter = ".Net Assemblies (*.exe, *.dll)|*.exe;*.dll";
+            if (ofd.ShowDialog() != DialogResult.OK) { if (InitialLoad) f.Close(); return; }
+            LoadAssembly(ofd.FileName, InitialLoad);
+        }
     }
 
     static void OnTreeDrawNode(object sender, DrawTreeNodeEventArgs e)
@@ -120,12 +122,7 @@ static class SizerNet
         e.Graphics.FillRectangle(Brushes.White,     x, e.Bounds.Top + 1, w    + 1, e.Bounds.Height - 2);
         e.Graphics.FillRectangle(Brushes.LightGray, x, e.Bounds.Top + 1, size + 1, e.Bounds.Height - 2);
         e.Graphics.DrawRectangle(Pens.DarkGray,     x, e.Bounds.Top + 1, w    + 1, e.Bounds.Height - 2);
-        if  (true) //ShowInKilobytes
-            e.Graphics.DrawString(((float)(long)e.Node.Tag/1024f).ToString("0.##") + " kb", tv.Font, Brushes.DarkSlateGray, x, e.Bounds.Top + 1);
-        //else (ShowInBytes)
-        //  e.Graphics.DrawString(((long)e.Node.Tag).ToString() + " b", tv.Font, Brushes.DarkSlateGray, x, e.Bounds.Top + 1);
-        //else (ShowInPercent)
-        //  e.Graphics.DrawString((pct*100).ToString("0.##") + "%", tv.Font, Brushes.DarkSlateGray, x, e.Bounds.Top + 1);
+        e.Graphics.DrawString(FormatKb((long)e.Node.Tag), tv.Font, Brushes.DarkSlateGray, x, e.Bounds.Top + 1);
         e.Graphics.DrawLine((e.State & TreeNodeStates.Selected) != 0 ? SystemPens.Highlight : SystemPens.ControlLight, e.Bounds.Left + 5, e.Bounds.Top + e.Bounds.Height/2, x - 5, e.Bounds.Top + e.Bounds.Height/2);
         if (tv.Nodes[0].Bounds.X != TreeViewScrollX) { TreeViewScrollX = tv.Nodes[0].Bounds.X; tv.Invalidate(); }
     }
@@ -150,8 +147,8 @@ static class SizerNet
             AppDomain.CurrentDomain.AssemblyResolve -= ResolveExternalAssembly;
             AppDomain.CurrentDomain.AssemblyResolve += ResolveExternalAssembly;
             AssemblyPath = new FileInfo(AssemblyPath).FullName;
-            DependencyDirs = new [] { Path.GetDirectoryName(AssemblyPath), Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) };
-            IgnoredDependencies = new string[0];
+            DependencyDirs = new List<string> { Path.GetDirectoryName(AssemblyPath), Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) };
+            IgnoredDependencies = new List<string>();
             Assembly assembly = Assembly.LoadFile(AssemblyPath);
             bool IsReflectionOnly = false;
             AssemblySize = new FileInfo(assembly.Location).Length;
@@ -266,7 +263,7 @@ static class SizerNet
             }
 
             SetNodeTag(nAssembly.Nodes.Add("Other Overhead"), AssemblySize - (long)nAssembly.Tag);
-            SortByNodeByTag(nAssembly.Nodes);
+            SortNodesByTag(nAssembly.Nodes);
             //FilterNodeByTag(nAssembly.Nodes, AssemblySize/100);
             nAssembly.Expand();
             tv.Nodes.Add(nAssembly);
@@ -299,7 +296,7 @@ static class SizerNet
 
     static Assembly ResolveExternalAssembly(object sender, ResolveEventArgs args)
     {
-        if (System.Array.IndexOf<string>(IgnoredDependencies, args.Name) >= 0) return null;
+        if (IgnoredDependencies.Contains(args.Name)) return null;
 
         string DllFileName = new AssemblyName(args.Name).Name + ".dll";
         foreach (string dir in DependencyDirs)
@@ -308,20 +305,20 @@ static class SizerNet
             if (File.Exists(TestAssemblyPath)) return Assembly.LoadFile(TestAssemblyPath);
         }
 
-        var ofd = new OpenFileDialog();
-        ofd.Title = "Find dependency: " + args.Name;
-        ofd.ValidateNames = ofd.CheckFileExists = ofd.CheckPathExists = true;
-        ofd.FileName = DllFileName;
-        ofd.Filter = ".Net Dependencies (*.dll)|*.dll";
-        if (ofd.ShowDialog() != DialogResult.OK)
+        using (var ofd = new OpenFileDialog())
         {
-            System.Array.Resize<string>(ref IgnoredDependencies, IgnoredDependencies.Length + 1);
-            IgnoredDependencies[IgnoredDependencies.Length - 1] = args.Name;
-            return null;
+            ofd.Title = "Find dependency: " + args.Name;
+            ofd.ValidateNames = ofd.CheckFileExists = ofd.CheckPathExists = true;
+            ofd.FileName = DllFileName;
+            ofd.Filter = ".Net Dependencies (*.dll)|*.dll";
+            if (ofd.ShowDialog() != DialogResult.OK)
+            {
+                IgnoredDependencies.Add(args.Name);
+                return null;
+            }
+            DependencyDirs.Add(Path.GetDirectoryName(ofd.FileName));
+            return Assembly.LoadFile(ofd.FileName);
         }
-        System.Array.Resize<string>(ref DependencyDirs, DependencyDirs.Length + 1);
-        DependencyDirs[DependencyDirs.Length - 1] = Path.GetDirectoryName(ofd.FileName);
-        return Assembly.LoadFile(ofd.FileName);
     }
 
     static void SetNodeTag(TreeNode n, long amount)
@@ -330,14 +327,19 @@ static class SizerNet
         for (n = n.Parent; n != null; n = n.Parent) n.Tag = ((long)n.Tag) + amount;
     }
 
-    static void SortByNodeByTag(TreeNodeCollection nc)
+    static void SortNodesByTag(TreeNodeCollection nc)
     {
-        foreach (TreeNode n in nc) SortByNodeByTag(n.Nodes);
+        foreach (TreeNode n in nc) SortNodesByTag(n.Nodes);
         TreeNode[] ns = new TreeNode[nc.Count];
         nc.CopyTo(ns, 0);
-        Array.Sort<TreeNode>(ns, (TreeNode a, TreeNode b) => { return unchecked((int)((long)b.Tag - (long)a.Tag)); });
+        Array.Sort<TreeNode>(ns, (TreeNode a, TreeNode b) => ((long)b.Tag).CompareTo((long)a.Tag));
         nc.Clear();
         nc.AddRange(ns);
+    }
+
+    static string FormatKb(long bytes)
+    {
+        return (bytes / 1024f).ToString("0.##") + " kb";
     }
 
     static void FilterNodeByTag(TreeNodeCollection nc, long Threshold)
@@ -379,7 +381,8 @@ static class SizerNet
     {
         FileInfo fi1 = new FileInfo(path1), fi2 = new FileInfo(path2);
         if (!fi1.Exists || !fi2.Exists || fi1.Length != fi2.Length) return false;
-        FileStream stream1 = fi1.Open(FileMode.Open, FileAccess.Read, FileShare.Read), stream2 = fi2.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
+        using (FileStream stream1 = fi1.Open(FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (FileStream stream2 = fi2.Open(FileMode.Open, FileAccess.Read, FileShare.Read))
         for (byte[] buf1 = new byte[4096], buf2 = new byte[4096];;)
         {
             int count = stream1.Read(buf1, 0, 4096); stream2.Read(buf2, 0, 4096);

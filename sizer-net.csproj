@@ -29,7 +29,7 @@
     </TargetFrameworkProfile>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Debug'">
-    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <PlatformTarget>AnyCPU</PlatformTarget>
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
@@ -45,7 +45,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Release35' or '$(Configuration)'=='Release45'">
     <TargetFrameworkVersion Condition="'$(Configuration)'=='Release35'">v3.5</TargetFrameworkVersion>
-    <TargetFrameworkVersion Condition="'$(Configuration)'=='Release45'">v4.5</TargetFrameworkVersion>
+    <TargetFrameworkVersion Condition="'$(Configuration)'=='Release45'">v4.8</TargetFrameworkVersion>
     <OutputPath Condition="'$(Configuration)'=='Release35'">Release\35\</OutputPath>
     <OutputPath Condition="'$(Configuration)'=='Release45'">Release\45\</OutputPath>
     <IntermediateOutputPath>$(OutputPath)</IntermediateOutputPath>
@@ -59,7 +59,7 @@
   </PropertyGroup>
   <PropertyGroup>
     <DefineConstants Condition="'$(TargetFrameworkVersion)'=='v3.5'">DOTNET35</DefineConstants>
-    <DefineConstants Condition="'$(TargetFrameworkVersion)'=='v4.5'">DOTNET45</DefineConstants>
+    <DefineConstants Condition="'$(TargetFrameworkVersion)'!='v3.5'">DOTNET45</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
