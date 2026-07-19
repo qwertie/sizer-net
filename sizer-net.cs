@@ -318,11 +318,23 @@ static class SizerNet
     {
         if (IgnoredDependencies.Contains(args.Name)) return null;
 
-        string DllFileName = new AssemblyName(args.Name).Name + ".dll";
+        AssemblyName WantedName = new AssemblyName(args.Name);
+        string DllFileName = WantedName.Name + ".dll";
         foreach (string dir in DependencyDirs)
         {
             string TestAssemblyPath = Path.Combine(dir, DllFileName);
             if (File.Exists(TestAssemblyPath)) return Assembly.LoadFile(TestAssemblyPath);
+        }
+
+        foreach (string GuessedPath in GuessDependencyPaths(WantedName))
+        {
+            try
+            {
+                Assembly GuessedAssembly = Assembly.LoadFile(GuessedPath);
+                DependencyDirs.Add(Path.GetDirectoryName(GuessedPath));
+                return GuessedAssembly;
+            }
+            catch { } //candidate could not be loaded (e.g. a reference-only assembly), try the next one
         }
 
         using (var ofd = new OpenFileDialog())
@@ -339,6 +351,109 @@ static class SizerNet
             DependencyDirs.Add(Path.GetDirectoryName(ofd.FileName));
             return Assembly.LoadFile(ofd.FileName);
         }
+    }
+
+    //guess the location of a dependency from its metadata (name, version, public key token) by probing standard
+    //.NET locations: the GAC, .NET Framework install and reference assembly dirs, .NET Core/5+ shared frameworks
+    //and the NuGet package cache - candidates whose version and public key token match best are returned first
+    static List<string> GuessDependencyPaths(AssemblyName Wanted)
+    {
+        string DllFileName = Wanted.Name + ".dll";
+        string WinDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        string[] ProgramFilesDirs = { Environment.GetEnvironmentVariable("ProgramFiles"), Environment.GetEnvironmentVariable("ProgramFiles(x86)") };
+        var Candidates = new List<string>();
+
+        //global assembly cache (v4 style and legacy), e.g. C:\Windows\Microsoft.NET\assembly\GAC_MSIL\<name>\v4.0_<version>__<token>\<name>.dll
+        foreach (string GacRoot in new[] { Path.Combine(WinDir, "Microsoft.NET\\assembly"), Path.Combine(WinDir, "assembly") })
+            foreach (string Gac in new[] { "GAC_MSIL", "GAC_64", "GAC_32", "GAC" })
+                foreach (string VersionDir in SafeGetDirectories(Path.Combine(Path.Combine(GacRoot, Gac), Wanted.Name)))
+                    AddCandidate(Candidates, Path.Combine(VersionDir, DllFileName));
+
+        //.NET Framework install directories
+        foreach (string FrameworkDir in new[] { "Framework64\\v4.0.30319", "Framework\\v4.0.30319", "Framework64\\v4.0.30319\\WPF", "Framework\\v4.0.30319\\WPF", "Framework64\\v2.0.50727", "Framework\\v2.0.50727" })
+            AddCandidate(Candidates, Path.Combine(Path.Combine(Path.Combine(WinDir, "Microsoft.NET"), FrameworkDir), DllFileName));
+
+        //.NET Framework reference assemblies (targeting packs), newest first, including facades (System.Runtime etc.)
+        foreach (string ProgramFilesDir in ProgramFilesDirs)
+        {
+            if (string.IsNullOrEmpty(ProgramFilesDir)) continue;
+            foreach (string VersionDir in SortByVersionDesc(SafeGetDirectories(Path.Combine(ProgramFilesDir, "Reference Assemblies\\Microsoft\\Framework\\.NETFramework")), Wanted.Version))
+            {
+                AddCandidate(Candidates, Path.Combine(VersionDir, DllFileName));
+                AddCandidate(Candidates, Path.Combine(Path.Combine(VersionDir, "Facades"), DllFileName));
+            }
+
+            //.NET Core / .NET 5+ shared frameworks
+            foreach (string SharedFramework in new[] { "Microsoft.NETCore.App", "Microsoft.WindowsDesktop.App", "Microsoft.AspNetCore.App" })
+                foreach (string VersionDir in SortByVersionDesc(SafeGetDirectories(Path.Combine(Path.Combine(ProgramFilesDir, "dotnet\\shared"), SharedFramework)), Wanted.Version))
+                    AddCandidate(Candidates, Path.Combine(VersionDir, DllFileName));
+        }
+
+        //NuGet package cache
+        string PackageDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget\\packages\\" + Wanted.Name.ToLowerInvariant());
+        foreach (string VersionDir in SortByVersionDesc(SafeGetDirectories(PackageDir), Wanted.Version))
+            foreach (string LibOrRef in new[] { "lib", "ref" })
+                foreach (string TfmDir in SafeGetDirectories(Path.Combine(VersionDir, LibOrRef)))
+                    AddCandidate(Candidates, Path.Combine(TfmDir, DllFileName));
+
+        //verify candidates by reading their metadata; best matches first, non-matching names dropped
+        byte[] WantedToken = Wanted.GetPublicKeyToken();
+        var Scored = new List<KeyValuePair<int, string>>();
+        foreach (string Candidate in Candidates)
+        {
+            try
+            {
+                AssemblyName Found = AssemblyName.GetAssemblyName(Candidate);
+                if (!string.Equals(Found.Name, Wanted.Name, StringComparison.OrdinalIgnoreCase)) continue;
+                int Score = 0;
+                if (Wanted.Version != null && Wanted.Version.Equals(Found.Version)) Score += 2;
+                if (WantedToken != null && WantedToken.Length != 0 && TokensEqual(WantedToken, Found.GetPublicKeyToken())) Score += 1;
+                Scored.Add(new KeyValuePair<int, string>(Score, Candidate));
+            }
+            catch { } //not a readable .NET assembly
+        }
+        var Result = new List<string>();
+        for (int Score = 3; Score >= 0; Score--)
+            foreach (KeyValuePair<int, string> kv in Scored)
+                if (kv.Key == Score) Result.Add(kv.Value);
+        return Result;
+    }
+
+    static void AddCandidate(List<string> Candidates, string CandidatePath)
+    {
+        if (File.Exists(CandidatePath) && !Candidates.Contains(CandidatePath)) Candidates.Add(CandidatePath);
+    }
+
+    static string[] SafeGetDirectories(string Dir)
+    {
+        try { return Directory.GetDirectories(Dir); } catch { return new string[0]; }
+    }
+
+    //sort version-named directories descending, listing versions with the wanted major version first
+    static string[] SortByVersionDesc(string[] Dirs, Version Wanted)
+    {
+        Array.Sort(Dirs, (string a, string b) =>
+        {
+            Version va = ParseDirVersion(a), vb = ParseDirVersion(b);
+            if (Wanted != null && (va.Major == Wanted.Major) != (vb.Major == Wanted.Major)) return (vb.Major == Wanted.Major ? 1 : -1);
+            return vb.CompareTo(va);
+        });
+        return Dirs;
+    }
+
+    static Version ParseDirVersion(string Dir)
+    {
+        string s = Path.GetFileName(Dir).TrimStart('v', 'V');
+        int Dash = s.IndexOf('-'); //strip prerelease suffix, e.g. "9.0.0-preview.1"
+        if (Dash >= 0) s = s.Substring(0, Dash);
+        try { return new Version(s.IndexOf('.') < 0 ? s + ".0" : s); } catch { return new Version(0, 0); }
+    }
+
+    static bool TokensEqual(byte[] a, byte[] b)
+    {
+        if (a == null || b == null || a.Length != b.Length) return false;
+        for (int i = 0; i != a.Length; i++) if (a[i] != b[i]) return false;
+        return true;
     }
 
     static void SetNodeTag(TreeNode n, int SizeKind, long Amount)
