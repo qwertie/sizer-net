@@ -58,6 +58,8 @@ static class SizerNet
     static Form f;
     static TreeView tv;
     static int TreeViewScrollX = 0;
+    static ToolTip BarToolTip = new ToolTip();
+    static TreeNode BarToolTipNode = null;
     static string AssemblyPath;
     static long AssemblySize;
     static List<string> DependencyDirs = new List<string>(), IgnoredDependencies = new List<string>();
@@ -78,10 +80,13 @@ static class SizerNet
         tv.Location = new Point(13, 13);
         tv.Size = new Size(f.ClientSize.Width - 13 - 13, f.ClientSize.Height - 13 - 23 - 13 - 13);
         tv.DrawMode = TreeViewDrawMode.OwnerDrawText;
-        tv.ShowNodeToolTips = true;
+        tv.ShowNodeToolTips = false; //tooltip is shown manually when the mouse is over the size bar (see OnTreeMouseMove)
         tv.Anchor = (AnchorStyles)(AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right);
         tv.Resize += (object sender, EventArgs e) => { tv.Invalidate(); };
         tv.DrawNode += OnTreeDrawNode;
+        BarToolTip.AutoPopDelay = 32767;
+        tv.MouseMove += OnTreeMouseMove;
+        tv.MouseLeave += (object sender, EventArgs e) => { BarToolTip.Hide(tv); BarToolTipNode = null; };
         var cms = new ContextMenuStrip();
         cms.Items.Add("Copy to clipboard", null, (object sender, EventArgs e) => { if (tv.SelectedNode != null) Clipboard.SetText(GetSubtreeText(tv.SelectedNode)); });
         cms.Opening += (object sender, System.ComponentModel.CancelEventArgs e) =>
@@ -141,13 +146,36 @@ static class SizerNet
         float pct = (float)ns.Total / AssemblySize;
         int w = tv.ClientSize.Width / 4, x = tv.ClientSize.Width - w - 5, size = (int)(w * pct);
         int sizeMeta = (ns.Total == 0 ? 0 : (int)(size * ((float)ns.Metadata / ns.Total)));
-        e.Graphics.FillRectangle(Brushes.White,          x,            e.Bounds.Top + 1, w    + 1,        e.Bounds.Height - 2);
-        e.Graphics.FillRectangle(Brushes.LightSteelBlue, x,            e.Bounds.Top + 1, sizeMeta + 1,    e.Bounds.Height - 2);
-        e.Graphics.FillRectangle(Brushes.LightGray,      x + sizeMeta, e.Bounds.Top + 1, size - sizeMeta + 1, e.Bounds.Height - 2);
+        int sizeCode = (ns.Total == 0 ? 0 : (int)(size * ((float)ns.Sizes[NodeSize.ILCode] / ns.Total)));
+        e.Graphics.FillRectangle(Brushes.White,          x,                       e.Bounds.Top + 1, w    + 1,                     e.Bounds.Height - 2);
+        e.Graphics.FillRectangle(Brushes.LightGray,      x,                       e.Bounds.Top + 1, sizeMeta + 1,                 e.Bounds.Height - 2);
+        e.Graphics.FillRectangle(Brushes.LightSteelBlue, x + sizeMeta,            e.Bounds.Top + 1, sizeCode + 1,                 e.Bounds.Height - 2);
+        e.Graphics.FillRectangle(Brushes.DarkSeaGreen,   x + sizeMeta + sizeCode, e.Bounds.Top + 1, size - sizeMeta - sizeCode + 1, e.Bounds.Height - 2);
         e.Graphics.DrawRectangle(Pens.DarkGray,          x,            e.Bounds.Top + 1, w    + 1,        e.Bounds.Height - 2);
         e.Graphics.DrawString(FormatKb(ns.Total), tv.Font, Brushes.DarkSlateGray, x, e.Bounds.Top + 1);
         e.Graphics.DrawLine((e.State & TreeNodeStates.Selected) != 0 ? SystemPens.Highlight : SystemPens.ControlLight, e.Bounds.Left + 5, e.Bounds.Top + e.Bounds.Height/2, x - 5, e.Bounds.Top + e.Bounds.Height/2);
         if (tv.Nodes[0].Bounds.X != TreeViewScrollX) { TreeViewScrollX = tv.Nodes[0].Bounds.X; tv.Invalidate(); }
+    }
+
+    //shows the size breakdown tooltip only while the mouse is over the owner-drawn size bar (same geometry as OnTreeDrawNode)
+    static void OnTreeMouseMove(object sender, MouseEventArgs e)
+    {
+        int w = tv.ClientSize.Width / 4, x = tv.ClientSize.Width - w - 5;
+        TreeNode n = tv.Nodes.Count == 0 ? null : tv.GetNodeAt(e.X, e.Y);
+        bool overBar = n != null && !string.IsNullOrEmpty(n.ToolTipText) && e.X >= x && e.X <= x + w;
+        if (overBar)
+        {
+            if (n != BarToolTipNode)
+            {
+                BarToolTipNode = n;
+                BarToolTip.Show(n.ToolTipText, tv, e.X + 16, e.Y + 20);
+            }
+        }
+        else if (BarToolTipNode != null)
+        {
+            BarToolTip.Hide(tv);
+            BarToolTipNode = null;
+        }
     }
 
     //estimated numbers for byte size of overhead introduced by various things
