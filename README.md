@@ -5,7 +5,7 @@ This is a tool that shows the size of things (types, methods, static arrays, etc
 
 ## Download
 
-You can find a binary download under the [Releases page](https://github.com/schellingb/sizer-net/releases/latest).
+You can find a binary download under the [Releases page](https://github.com/qwertie/sizer-net/releases/latest).
 
 ## Additions in qwertie's fork (by Fable5)
 
